@@ -240,6 +240,8 @@ wasmtime_option_group! {
         pub threads: Option<bool>,
         /// Enable suport for WASI HTTP API (experimental)
         pub http: Option<bool>,
+        /// Enable support for WASI Cloud Core (experimental)
+        pub cloud_core: Option<bool>,
         /// Inherit environment variables and file descriptors following the
         /// systemd listen fd specification (UNIX only)
         pub listenfd: Option<bool>,

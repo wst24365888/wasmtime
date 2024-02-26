@@ -733,6 +733,24 @@ impl RunCommand {
             }
         }
 
+        if self.run.common.wasi.cloud_core == Some(true) {
+            #[cfg(not(all(feature = "wasi-cloud-core", feature = "component-model")))]
+            {
+                bail!("Cannot enable wasi-cloud-core when the binary is not compiled with this feature.");
+            }
+            #[cfg(all(feature = "wasi-cloud-core", feature = "component-model"))]
+            {
+                match linker {
+                    CliLinker::Core(_) => {
+                        bail!("Cannot enable wasi-cloud-core for core wasm modules");
+                    }
+                    CliLinker::Component(linker) => {
+                        wasmtime_wasi_cloud_core::Interfaces::add_to_linker(linker)?;
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
