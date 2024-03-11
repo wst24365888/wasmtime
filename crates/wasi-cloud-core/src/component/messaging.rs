@@ -1,4 +1,4 @@
-use super::Ctx;
+use super::Host;
 
 use crate::capability::messaging::{consumer, types};
 use crate::capability::Messaging;
@@ -9,10 +9,10 @@ use async_trait::async_trait;
 use tracing::instrument;
 
 #[async_trait]
-impl types::Host for Ctx {}
+impl types::Host for Host {}
 
 #[async_trait]
-impl consumer::Host for Ctx {
+impl consumer::Host for Host {
     #[instrument]
     async fn request(
         &mut self,

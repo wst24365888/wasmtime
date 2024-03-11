@@ -1,4 +1,4 @@
-use super::Ctx;
+use super::Host;
 
 use crate::capability::keyvalue::{atomic, eventual, types, wasi_keyvalue_error};
 use crate::capability::{KeyValueAtomic, KeyValueEventual};
@@ -12,12 +12,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::instrument;
 use wasmtime::component::Resource;
 use wasmtime_wasi::pipe::{AsyncReadStream, AsyncWriteStream};
-use wasmtime_wasi::{HostOutputStream, InputStream};
+use wasmtime_wasi::{HostOutputStream, InputStream, WasiView};
 
 type Result<T, E = Resource<wasi_keyvalue_error::Error>> = core::result::Result<T, E>;
 
 #[async_trait]
-impl atomic::Host for Ctx {
+impl atomic::Host for Host {
     #[instrument]
     async fn increment(
         &mut self,
@@ -25,11 +25,12 @@ impl atomic::Host for Ctx {
         key: types::Key,
         delta: u64,
     ) -> anyhow::Result<Result<u64>> {
-        let bucket = self.table.get(&bucket).context("failed to get bucket")?;
-        match self.handler.increment(bucket, key, delta).await {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.increment(bucket, key, delta).await {
             Ok(new) => Ok(Ok(new)),
             Err(err) => {
-                let err = self.table.push(err).context("failed to push error")?;
+                let err = self.table().push(err).context("failed to push error")?;
                 Ok(Err(err))
             }
         }
@@ -43,11 +44,12 @@ impl atomic::Host for Ctx {
         old: u64,
         new: u64,
     ) -> anyhow::Result<Result<bool>> {
-        let bucket = self.table.get(&bucket).context("failed to get bucket")?;
-        match self.handler.compare_and_swap(bucket, key, old, new).await {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.compare_and_swap(bucket, key, old, new).await {
             Ok(changed) => Ok(Ok(changed)),
             Err(err) => {
-                let err = self.table.push(err).context("failed to push error")?;
+                let err = self.table().push(err).context("failed to push error")?;
                 Ok(Err(err))
             }
         }
@@ -55,25 +57,26 @@ impl atomic::Host for Ctx {
 }
 
 #[async_trait]
-impl eventual::Host for Ctx {
+impl eventual::Host for Host {
     #[instrument]
     async fn get(
         &mut self,
         bucket: Resource<types::Bucket>,
         key: types::Key,
     ) -> anyhow::Result<Result<Option<Resource<types::IncomingValue>>>> {
-        let bucket = self.table.get(&bucket).context("failed to get bucket")?;
-        match self.handler.get(bucket, key).await {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.get(bucket, key).await {
             Ok(Some((stream, size))) => {
                 let value = self
-                    .table
+                    .table()
                     .push((stream, size))
                     .context("failed to push stream and size")?;
                 Ok(Ok(Some(value)))
             }
             Ok(None) => Ok(Ok(None)),
             Err(err) => {
-                let err = self.table.push(err).context("failed to push error")?;
+                let err = self.table().push(err).context("failed to push error")?;
                 Ok(Err(err))
             }
         }
@@ -86,17 +89,17 @@ impl eventual::Host for Ctx {
         key: types::Key,
         outgoing_value: Resource<types::OutgoingValue>,
     ) -> anyhow::Result<Result<()>> {
-        let mut stream = self
-            .table
+        let (table, handler) = self.table_and_handler();
+        let mut stream = table
             .get::<AsyncVec>(&outgoing_value)
             .context("failed to get outgoing value")?
             .clone();
         stream.rewind().await.context("failed to rewind stream")?;
-        let bucket = self.table.get(&bucket).context("failed to get bucket")?;
-        match self.handler.set(bucket, key, Box::new(stream)).await {
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.set(bucket, key, Box::new(stream)).await {
             Ok(()) => Ok(Ok(())),
             Err(err) => {
-                let err = self.table.push(err).context("failed to push error")?;
+                let err = self.table().push(err).context("failed to push error")?;
                 Ok(Err(err))
             }
         }
@@ -108,11 +111,12 @@ impl eventual::Host for Ctx {
         bucket: Resource<types::Bucket>,
         key: types::Key,
     ) -> anyhow::Result<Result<()>> {
-        let bucket = self.table.get(&bucket).context("failed to get bucket")?;
-        match self.handler.delete(bucket, key).await {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.delete(bucket, key).await {
             Ok(()) => Ok(Ok(())),
             Err(err) => {
-                let err = self.table.push(err).context("failed to push error")?;
+                let err = self.table().push(err).context("failed to push error")?;
                 Ok(Err(err))
             }
         }
@@ -124,20 +128,21 @@ impl eventual::Host for Ctx {
         bucket: Resource<types::Bucket>,
         key: types::Key,
     ) -> anyhow::Result<Result<bool>> {
-        let bucket = self.table.get(&bucket).context("failed to get bucket")?;
-        match self.handler.exists(bucket, key).await {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.exists(bucket, key).await {
             Ok(true) => Ok(Ok(true)),
             Ok(false) => {
                 // NOTE: This is required until
                 // https://github.com/WebAssembly/wasi-keyvalue/pull/18 is merged
                 let err = self
-                    .table
+                    .table()
                     .push(anyhow!("key does not exist"))
                     .context("failed to push error")?;
                 Ok(Err(err))
             }
             Err(err) => {
-                let err = self.table.push(err).context("failed to push error")?;
+                let err = self.table().push(err).context("failed to push error")?;
                 Ok(Err(err))
             }
         }
@@ -145,10 +150,10 @@ impl eventual::Host for Ctx {
 }
 
 #[async_trait]
-impl types::HostBucket for Ctx {
+impl types::HostBucket for Host {
     #[instrument]
     fn drop(&mut self, bucket: Resource<types::Bucket>) -> anyhow::Result<()> {
-        self.table
+        self.table()
             .delete(bucket)
             .context("failed to delete bucket")?;
         Ok(())
@@ -160,7 +165,7 @@ impl types::HostBucket for Ctx {
         name: String,
     ) -> anyhow::Result<Result<Resource<types::Bucket>>> {
         let bucket = self
-            .table
+            .table()
             .push(Arc::new(name))
             .context("failed to open bucket")?;
         Ok(Ok(bucket))
@@ -168,10 +173,10 @@ impl types::HostBucket for Ctx {
 }
 
 #[async_trait]
-impl types::HostOutgoingValue for Ctx {
+impl types::HostOutgoingValue for Host {
     #[instrument]
     fn drop(&mut self, outgoing_value: Resource<types::OutgoingValue>) -> anyhow::Result<()> {
-        self.table
+        self.table()
             .delete(outgoing_value)
             .context("failed to delete outgoing value")?;
         Ok(())
@@ -179,7 +184,7 @@ impl types::HostOutgoingValue for Ctx {
 
     #[instrument]
     async fn new_outgoing_value(&mut self) -> anyhow::Result<Resource<types::OutgoingValue>> {
-        self.table
+        self.table()
             .push(AsyncVec::default())
             .context("failed to push outgoing value")
     }
@@ -191,7 +196,7 @@ impl types::HostOutgoingValue for Ctx {
         body: Vec<u8>,
     ) -> anyhow::Result<Result<()>> {
         let mut stream = self
-            .table
+            .table()
             .get::<AsyncVec>(&outgoing_value)
             .context("failed to get outgoing value")?
             .clone();
@@ -208,13 +213,13 @@ impl types::HostOutgoingValue for Ctx {
         outgoing_value: Resource<types::OutgoingValue>,
     ) -> anyhow::Result<Result<Resource<types::OutputStream>>> {
         let stream = self
-            .table
+            .table()
             .get::<AsyncVec>(&outgoing_value)
             .context("failed to get outgoing value")?
             .clone();
         let stream: Box<dyn HostOutputStream> = Box::new(AsyncWriteStream::new(1 << 16, stream));
         let stream = self
-            .table
+            .table()
             .push(stream)
             .context("failed to push output stream")?;
         Ok(Ok(stream))
@@ -222,10 +227,10 @@ impl types::HostOutgoingValue for Ctx {
 }
 
 #[async_trait]
-impl types::HostIncomingValue for Ctx {
+impl types::HostIncomingValue for Host {
     #[instrument]
     fn drop(&mut self, incoming_value: Resource<types::IncomingValue>) -> anyhow::Result<()> {
-        self.table
+        self.table()
             .delete(incoming_value)
             .context("failed to delete incoming value")?;
         Ok(())
@@ -237,7 +242,7 @@ impl types::HostIncomingValue for Ctx {
         incoming_value: Resource<types::IncomingValue>,
     ) -> anyhow::Result<Result<types::IncomingValueSyncBody>> {
         let (stream, size) = self
-            .table
+            .table()
             .delete(incoming_value)
             .context("failed to delete incoming value")?;
         let mut stream = stream.take(size);
@@ -250,7 +255,7 @@ impl types::HostIncomingValue for Ctx {
             }
             Err(err) => {
                 let err = self
-                    .table
+                    .table()
                     .push(anyhow!(err).context("failed to read stream"))
                     .context("failed to push error")?;
                 Ok(Err(err))
@@ -264,11 +269,11 @@ impl types::HostIncomingValue for Ctx {
         incoming_value: Resource<types::IncomingValue>,
     ) -> anyhow::Result<Result<Resource<InputStream>>> {
         let (stream, _) = self
-            .table
+            .table()
             .delete(incoming_value)
             .context("failed to delete incoming value")?;
         let stream = self
-            .table
+            .table()
             .push(InputStream::Host(Box::new(AsyncReadStream::new(stream))))
             .context("failed to push input stream")?;
         Ok(Ok(stream))
@@ -280,20 +285,20 @@ impl types::HostIncomingValue for Ctx {
         incoming_value: Resource<types::IncomingValue>,
     ) -> anyhow::Result<Result<u64>> {
         let (_, size): &(Box<dyn AsyncRead + Sync + Send + Unpin>, _) = self
-            .table
+            .table()
             .get(&incoming_value)
             .context("failed to get incoming value")?;
         Ok(Ok(*size))
     }
 }
 
-impl types::Host for Ctx {}
+impl types::Host for Host {}
 
 #[async_trait]
-impl wasi_keyvalue_error::HostError for Ctx {
+impl wasi_keyvalue_error::HostError for Host {
     #[instrument]
     fn drop(&mut self, error: Resource<wasi_keyvalue_error::Error>) -> anyhow::Result<()> {
-        let _: anyhow::Error = self.table.delete(error).context("failed to delete error")?;
+        let _: anyhow::Error = self.table().delete(error).context("failed to delete error")?;
         Ok(())
     }
 
@@ -302,11 +307,11 @@ impl wasi_keyvalue_error::HostError for Ctx {
         &mut self,
         error: Resource<wasi_keyvalue_error::Error>,
     ) -> anyhow::Result<String> {
-        self.table
+        self.table()
             .get(&error)
             .context("failed to get error")
             .map(|err: &anyhow::Error| format!("{err:#}"))
     }
 }
 
-impl wasi_keyvalue_error::Host for Ctx {}
+impl wasi_keyvalue_error::Host for Host {}

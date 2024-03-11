@@ -25,6 +25,9 @@ use wasmtime_wasi_threads::WasiThreadsCtx;
 #[cfg(feature = "wasi-http")]
 use wasmtime_wasi_http::WasiHttpCtx;
 
+#[cfg(feature = "wasi-cloud-core")]
+use wasmtime_wasi_cloud_core::component::Host;
+
 fn parse_env_var(s: &str) -> Result<(String, Option<String>)> {
     let mut parts = s.splitn(2, '=');
     Ok((
@@ -102,7 +105,7 @@ pub struct RunCommand {
 enum CliLinker {
     Core(wasmtime::Linker<Host>),
     #[cfg(feature = "component-model")]
-    Component(wasmtime::component::Linker<wasmtime_wasi_cloud_core::component::Ctx>),
+    Component(wasmtime::component::Linker<Host>),
 }
 
 impl RunCommand {
@@ -835,6 +838,7 @@ impl RunCommand {
     }
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 #[derive(Default, Clone)]
 struct Host {
     preview1_ctx: Option<wasi_common::WasiCtx>,
@@ -864,6 +868,7 @@ struct Host {
     guest_profiler: Option<Arc<wasmtime::GuestProfiler>>,
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 impl wasmtime_wasi::WasiView for Host {
     fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
         Arc::get_mut(&mut self.preview2_table)
@@ -881,6 +886,7 @@ impl wasmtime_wasi::WasiView for Host {
     }
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 impl wasmtime_wasi::preview1::WasiPreview1View for Host {
     fn adapter(&self) -> &wasmtime_wasi::preview1::WasiPreview1Adapter {
         &self.preview2_adapter
@@ -892,6 +898,7 @@ impl wasmtime_wasi::preview1::WasiPreview1View for Host {
     }
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 #[cfg(feature = "wasi-http")]
 impl wasmtime_wasi_http::types::WasiHttpView for Host {
     fn ctx(&mut self) -> &mut WasiHttpCtx {

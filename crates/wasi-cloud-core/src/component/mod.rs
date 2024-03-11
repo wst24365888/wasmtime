@@ -11,6 +11,7 @@ use bytes::Bytes;
 use tokio::sync::Mutex;
 use tracing::instrument;
 use wasmtime::component::{ResourceTable, ResourceTableError};
+use wasmtime::StoreLimits;
 use wasmtime_wasi::pipe::{
     ClosedInputStream, ClosedOutputStream,
 };
@@ -19,6 +20,8 @@ use wasmtime_wasi::{
     Subscribe, WasiCtx,
 };
 use wasmtime_wasi_http::WasiHttpCtx;
+use wasmtime_wasi_nn::WasiNnCtx;
+use wasmtime_wasi_threads::WasiThreadsCtx;
 
 mod blobstore;
 mod http;
@@ -171,18 +174,65 @@ impl StdoutStream for StdioStream<Box<dyn HostOutputStream>> {
     }
 }
 
-pub struct Ctx {
-    wasi: WasiCtx,
-    http: WasiHttpCtx,
-    table: ResourceTable,
-    handler: builtin::Handler,
-    stdin: StdioStream<Box<dyn HostInputStream>>,
-    stdout: StdioStream<Box<dyn HostOutputStream>>,
-    stderr: StdioStream<Box<dyn HostOutputStream>>,
+#[derive(Clone)]
+pub struct Host {
+    pub handler: builtin::Handler,
+    pub stdin: StdioStream<Box<dyn HostInputStream>>,
+    pub stdout: StdioStream<Box<dyn HostOutputStream>>,
+    pub stderr: StdioStream<Box<dyn HostOutputStream>>,
+    pub preview1_ctx: Option<wasi_common::WasiCtx>,
+    pub preview2_ctx: Option<Arc<std::sync::Mutex<wasmtime_wasi::WasiCtx>>>,
+    pub preview2_table: Arc<std::sync::Mutex<wasmtime::component::ResourceTable>>,
+    pub preview2_adapter: Arc<wasmtime_wasi::preview1::WasiPreview1Adapter>,
+    pub wasi_nn: Option<Arc<WasiNnCtx>>,
+    pub wasi_threads: Option<Arc<WasiThreadsCtx<Host>>>,
+    pub wasi_http: Option<Arc<WasiHttpCtx>>,
+    pub limits: StoreLimits,
+    pub guest_profiler: Option<Arc<wasmtime::GuestProfiler>>,
 }
 
-impl Debug for Ctx {
+impl Host {
+    fn table_and_handler(&mut self) -> (&mut ResourceTable, &mut builtin::Handler) {
+        let table = Arc::get_mut(&mut self.preview2_table)
+            .expect("wasmtime_wasi is not compatible with threads")
+            .get_mut()
+            .unwrap();
+        let handler = &mut self.handler;
+        (table, handler)
+    }
+
+    pub fn default() -> Self {
+        Self {
+            handler: builtin::Handler::default(),
+            stdin: StdioStream::default(),
+            stdout: StdioStream::default(),
+            stderr: StdioStream::default(),
+            preview1_ctx: None,
+            preview2_ctx: None,
+            preview2_table: Arc::new(std::sync::Mutex::new(ResourceTable::default())),
+            preview2_adapter: Arc::new(wasmtime_wasi::preview1::WasiPreview1Adapter::default()),
+            wasi_nn: None,
+            wasi_threads: None,
+            wasi_http: None,
+            limits: StoreLimits::default(),
+            guest_profiler: None,
+        }
+    }
+}
+
+impl Debug for Host {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Ctx").field("runtime", &"wasmtime").finish()
+    }
+}
+
+impl wasmtime_wasi::preview1::WasiPreview1View for Host {
+    fn adapter(&self) -> &wasmtime_wasi::preview1::WasiPreview1Adapter {
+        &self.preview2_adapter
+    }
+
+    fn adapter_mut(&mut self) -> &mut wasmtime_wasi::preview1::WasiPreview1Adapter {
+        Arc::get_mut(&mut self.preview2_adapter)
+            .expect("wasmtime_wasi is not compatible with threads")
     }
 }
