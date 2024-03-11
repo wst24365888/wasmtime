@@ -1,4 +1,4 @@
-use super::{Ctx, Instance};
+use super::Ctx;
 
 use crate::capability::keyvalue::{atomic, eventual, types, wasi_keyvalue_error};
 use crate::capability::{KeyValueAtomic, KeyValueEventual};
@@ -13,27 +13,6 @@ use tracing::instrument;
 use wasmtime::component::Resource;
 use wasmtime_wasi::pipe::{AsyncReadStream, AsyncWriteStream};
 use wasmtime_wasi::{HostOutputStream, InputStream};
-
-impl Instance {
-    /// Set [`KeyValueAtomic`] handler for this [Instance].
-    pub fn keyvalue_atomic(
-        &mut self,
-        keyvalue_atomic: Arc<dyn KeyValueAtomic + Send + Sync>,
-    ) -> &mut Self {
-        self.handler_mut().replace_keyvalue_atomic(keyvalue_atomic);
-        self
-    }
-
-    /// Set [`KeyValueEventual`] handler for this [Instance].
-    pub fn keyvalue_eventual(
-        &mut self,
-        keyvalue_eventual: Arc<dyn KeyValueEventual + Send + Sync>,
-    ) -> &mut Self {
-        self.handler_mut()
-            .replace_keyvalue_eventual(keyvalue_eventual);
-        self
-    }
-}
 
 type Result<T, E = Resource<wasi_keyvalue_error::Error>> = core::result::Result<T, E>;
 

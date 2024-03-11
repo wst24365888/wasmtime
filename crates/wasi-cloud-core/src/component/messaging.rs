@@ -1,22 +1,12 @@
-use super::{Ctx, Instance};
+use super::Ctx;
 
 use crate::capability::messaging::{consumer, types};
 use crate::capability::Messaging;
 
 use core::time::Duration;
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use tracing::instrument;
-
-impl Instance {
-    /// Set [`Messaging`] handler for this [Instance].
-    pub fn messaging(&mut self, messaging: Arc<dyn Messaging + Send + Sync>) -> &mut Self {
-        self.handler_mut().replace_messaging(messaging);
-        self
-    }
-}
 
 #[async_trait]
 impl types::Host for Ctx {}

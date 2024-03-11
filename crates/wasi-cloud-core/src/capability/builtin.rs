@@ -1,32 +1,27 @@
-use super::logging::logging;
-use super::{blobstore, bus, format_opt, messaging};
+use super::{blobstore, format_opt, messaging};
 
 use core::convert::Infallible;
 use core::fmt::Debug;
-use core::future::Future;
-use core::pin::Pin;
 use core::str::FromStr;
 use core::time::Duration;
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::{Stream, TryStreamExt};
 use nkeys::{KeyPair, KeyPairType};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncRead;
 use tracing::{instrument, trace};
 
 #[derive(Clone, Default)]
 pub struct Handler {
     blobstore: Option<Arc<dyn Blobstore + Sync + Send>>,
-    bus: Option<Arc<dyn Bus + Sync + Send>>,
     incoming_http: Option<Arc<dyn IncomingHttp + Sync + Send>>,
     outgoing_http: Option<Arc<dyn OutgoingHttp + Sync + Send>>,
     keyvalue_atomic: Option<Arc<dyn KeyValueAtomic + Sync + Send>>,
     keyvalue_eventual: Option<Arc<dyn KeyValueEventual + Sync + Send>>,
-    logging: Option<Arc<dyn Logging + Sync + Send>>,
     messaging: Option<Arc<dyn Messaging + Sync + Send>>,
 }
 
@@ -34,11 +29,9 @@ impl Debug for Handler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Handler")
             .field("blobstore", &format_opt(&self.blobstore))
-            .field("bus", &format_opt(&self.bus))
             .field("incoming_http", &format_opt(&self.incoming_http))
             .field("keyvalue_atomic", &format_opt(&self.keyvalue_atomic))
             .field("keyvalue_eventual", &format_opt(&self.keyvalue_eventual))
-            .field("logging", &format_opt(&self.logging))
             .field("messaging", &format_opt(&self.messaging))
             .field("outgoing_http", &format_opt(&self.outgoing_http))
             .finish()
@@ -57,10 +50,6 @@ fn proxy<'a, T: ?Sized>(
 }
 
 impl Handler {
-    fn proxy_bus(&self, method: &str) -> anyhow::Result<&Arc<dyn Bus + Sync + Send>> {
-        proxy(&self.bus, "Bus", method)
-    }
-
     fn proxy_blobstore(&self, method: &str) -> anyhow::Result<&Arc<dyn Blobstore + Sync + Send>> {
         proxy(&self.blobstore, "Blobstore", method)
     }
@@ -91,14 +80,6 @@ impl Handler {
         self.blobstore.replace(blobstore)
     }
 
-    /// Replace [`Bus`] handler returning the old one, if such was set
-    pub fn replace_bus(
-        &mut self,
-        bus: Arc<dyn Bus + Send + Sync>,
-    ) -> Option<Arc<dyn Bus + Send + Sync>> {
-        self.bus.replace(bus)
-    }
-
     /// Replace [`IncomingHttp`] handler returning the old one, if such was set
     pub fn replace_incoming_http(
         &mut self,
@@ -121,14 +102,6 @@ impl Handler {
         keyvalue_eventual: Arc<dyn KeyValueEventual + Send + Sync>,
     ) -> Option<Arc<dyn KeyValueEventual + Send + Sync>> {
         self.keyvalue_eventual.replace(keyvalue_eventual)
-    }
-
-    /// Replace [`Logging`] handler returning the old one, if such was set
-    pub fn replace_logging(
-        &mut self,
-        logging: Arc<dyn Logging + Send + Sync>,
-    ) -> Option<Arc<dyn Logging + Send + Sync>> {
-        self.logging.replace(logging)
     }
 
     /// Replace [`Messaging`] handler returning the old one, if such was set
@@ -195,32 +168,6 @@ pub enum TargetEntity {
     Link(Option<String>),
     /// Actor target entity
     Actor(ActorIdentifier),
-}
-
-impl TryFrom<bus::lattice::ActorIdentifier> for ActorIdentifier {
-    type Error = anyhow::Error;
-
-    fn try_from(entity: bus::lattice::ActorIdentifier) -> Result<Self, Self::Error> {
-        match entity {
-            bus::lattice::ActorIdentifier::PublicKey(key) => {
-                let key =
-                    KeyPair::from_public_key(&key).context("failed to parse actor public key")?;
-                Ok(ActorIdentifier::Key(Arc::new(key)))
-            }
-            bus::lattice::ActorIdentifier::Alias(alias) => Ok(ActorIdentifier::Alias(alias)),
-        }
-    }
-}
-
-impl TryFrom<bus::lattice::TargetEntity> for TargetEntity {
-    type Error = anyhow::Error;
-
-    fn try_from(entity: bus::lattice::TargetEntity) -> Result<Self, Self::Error> {
-        match entity {
-            bus::lattice::TargetEntity::Link(name) => Ok(Self::Link(name)),
-            bus::lattice::TargetEntity::Actor(actor) => actor.try_into().map(TargetEntity::Actor),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -334,76 +281,6 @@ pub trait Blobstore {
 }
 
 #[async_trait]
-/// `wasmcloud:bus/host` implementation
-pub trait Bus {
-    /// Identify the target of wasmbus module invocation
-    async fn identify_wasmbus_target(
-        &self,
-        binding: &str,
-        namespace: &str,
-    ) -> anyhow::Result<TargetEntity>;
-
-    /// Identify the target of component interface invocation
-    async fn identify_interface_target(
-        &self,
-        interface: &TargetInterface,
-    ) -> anyhow::Result<Option<TargetEntity>>;
-
-    /// Set interface call target
-    async fn set_target(
-        &self,
-        target: Option<TargetEntity>,
-        interfaces: Vec<TargetInterface>,
-    ) -> anyhow::Result<()>;
-
-    /// Handle `wasmcloud:bus/host.call`
-    async fn call(
-        &self,
-        target: Option<TargetEntity>,
-        operation: String,
-    ) -> anyhow::Result<(
-        Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
-        Box<dyn AsyncWrite + Sync + Send + Unpin>,
-        Box<dyn AsyncRead + Sync + Send + Unpin>,
-    )>;
-
-    /// Handle `wasmcloud:bus/config.get`
-    async fn get(
-        &self,
-        key: &str,
-    ) -> anyhow::Result<Result<Option<Vec<u8>>, super::guest_config::ConfigError>>;
-
-    /// Handle `wasmcloud:bus/config.get_all`
-    async fn get_all(
-        &self,
-    ) -> anyhow::Result<Result<Vec<(String, Vec<u8>)>, super::guest_config::ConfigError>>;
-
-    /// Handle `wasmcloud:bus/host.call` without streaming
-    async fn call_sync(
-        &self,
-        target: Option<TargetEntity>,
-        operation: String,
-        mut payload: Vec<u8>,
-    ) -> anyhow::Result<Vec<u8>> {
-        let (res, mut input, mut output) = self
-            .call(target, operation)
-            .await
-            .context("failed to process call")?;
-        input
-            .write_all(&payload)
-            .await
-            .context("failed to write request")?;
-        payload.clear();
-        output
-            .read_to_end(&mut payload)
-            .await
-            .context("failed to read output")?;
-        res.await.map_err(|e| anyhow!(e).context("call failed"))?;
-        Ok(payload)
-    }
-}
-
-#[async_trait]
 /// `wasi:http/incoming-handler` implementation
 pub trait IncomingHttp {
     /// Handle `wasi:http/incoming-handler`
@@ -452,18 +329,6 @@ pub trait KeyValueEventual {
 
     /// Handle `wasi:keyvalue/eventual.exists`
     async fn exists(&self, bucket: &str, key: String) -> anyhow::Result<bool>;
-}
-
-#[async_trait]
-/// `wasi:logging/logging` implementation
-pub trait Logging {
-    /// Handle `wasi:logging/logging.log`
-    async fn log(
-        &self,
-        level: logging::Level,
-        context: String,
-        message: String,
-    ) -> anyhow::Result<()>;
 }
 
 #[async_trait]
@@ -597,110 +462,6 @@ impl Blobstore for Handler {
         self.proxy_blobstore("wasi:blobstore/container.clear")?
             .clear_container(container)
             .await
-    }
-}
-
-#[async_trait]
-impl Bus for Handler {
-    #[instrument(level = "trace", skip_all)]
-    async fn identify_wasmbus_target(
-        &self,
-        binding: &str,
-        namespace: &str,
-    ) -> anyhow::Result<TargetEntity> {
-        if let Some(ref bus) = self.bus {
-            trace!("call `Bus` handler");
-            bus.identify_wasmbus_target(binding, namespace).await
-        } else {
-            bail!("host cannot identify the Wasmbus call target")
-        }
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    async fn identify_interface_target(
-        &self,
-        interface: &TargetInterface,
-    ) -> anyhow::Result<Option<TargetEntity>> {
-        if let Some(ref bus) = self.bus {
-            trace!("call `Bus` handler");
-            bus.identify_interface_target(interface).await
-        } else {
-            bail!("host cannot identify the interface call target")
-        }
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    async fn set_target(
-        &self,
-        target: Option<TargetEntity>,
-        interfaces: Vec<TargetInterface>,
-    ) -> anyhow::Result<()> {
-        self.proxy_bus("wasmcloud:bus/lattice.set-target")?
-            .set_target(target, interfaces)
-            .await
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    async fn get(
-        &self,
-        key: &str,
-    ) -> anyhow::Result<Result<Option<Vec<u8>>, super::guest_config::ConfigError>> {
-        self.proxy_bus("wasmcloud:bus/config.get")?.get(key).await
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    async fn get_all(
-        &self,
-    ) -> anyhow::Result<Result<Vec<(String, Vec<u8>)>, super::guest_config::ConfigError>> {
-        self.proxy_bus("wasmcloud:bus/config.get_all")?
-            .get_all()
-            .await
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    async fn call(
-        &self,
-        target: Option<TargetEntity>,
-        operation: String,
-    ) -> anyhow::Result<(
-        Pin<Box<dyn Future<Output = Result<(), String>> + Send>>,
-        Box<dyn AsyncWrite + Sync + Send + Unpin>,
-        Box<dyn AsyncRead + Sync + Send + Unpin>,
-    )> {
-        self.proxy_bus("wasmcloud:bus/host.call")?
-            .call(target, operation)
-            .await
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    async fn call_sync(
-        &self,
-        target: Option<TargetEntity>,
-        operation: String,
-        payload: Vec<u8>,
-    ) -> anyhow::Result<Vec<u8>> {
-        self.proxy_bus("wasmcloud:bus/host.call-sync")?
-            .call_sync(target, operation, payload)
-            .await
-    }
-}
-
-#[async_trait]
-impl Logging for Handler {
-    #[instrument(level = "trace", skip_all)]
-    async fn log(
-        &self,
-        level: logging::Level,
-        context: String,
-        message: String,
-    ) -> anyhow::Result<()> {
-        if let Some(ref logging) = self.logging {
-            trace!("call `Logging` handler");
-            logging.log(level, context, message).await
-        } else {
-            // discard all log invocations by default
-            Ok(())
-        }
     }
 }
 
@@ -839,16 +600,12 @@ impl OutgoingHttp for Handler {
 pub(crate) struct HandlerBuilder {
     /// [`Blobstore`] handler
     pub blobstore: Option<Arc<dyn Blobstore + Sync + Send>>,
-    /// [`Bus`] handler
-    pub bus: Option<Arc<dyn Bus + Sync + Send>>,
     /// [`IncomingHttp`] handler
     pub incoming_http: Option<Arc<dyn IncomingHttp + Sync + Send>>,
     /// [`KeyValueAtomic`] handler
     pub keyvalue_atomic: Option<Arc<dyn KeyValueAtomic + Sync + Send>>,
     /// [`KeyValueEventual`] handler
     pub keyvalue_eventual: Option<Arc<dyn KeyValueEventual + Sync + Send>>,
-    /// [`Logging`] handler
-    pub logging: Option<Arc<dyn Logging + Sync + Send>>,
     /// [`Messaging`] handler
     pub messaging: Option<Arc<dyn Messaging + Sync + Send>>,
     /// [`OutgoingHttp`] handler
@@ -860,14 +617,6 @@ impl HandlerBuilder {
     pub fn blobstore(self, blobstore: Arc<impl Blobstore + Sync + Send + 'static>) -> Self {
         Self {
             blobstore: Some(blobstore),
-            ..self
-        }
-    }
-
-    /// Set [`Bus`] handler
-    pub fn bus(self, bus: Arc<impl Bus + Sync + Send + 'static>) -> Self {
-        Self {
-            bus: Some(bus),
             ..self
         }
     }
@@ -905,14 +654,6 @@ impl HandlerBuilder {
         }
     }
 
-    /// Set [`Logging`] handler
-    pub fn logging(self, logging: Arc<impl Logging + Sync + Send + 'static>) -> Self {
-        Self {
-            logging: Some(logging),
-            ..self
-        }
-    }
-
     /// Set [`Messaging`] handler
     pub fn messaging(self, messaging: Arc<impl Messaging + Sync + Send + 'static>) -> Self {
         Self {
@@ -937,11 +678,9 @@ impl Debug for HandlerBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HandlerBuilder")
             .field("blobstore", &format_opt(&self.blobstore))
-            .field("bus", &format_opt(&self.bus))
             .field("incoming_http", &format_opt(&self.incoming_http))
             .field("keyvalue_atomic", &format_opt(&self.keyvalue_atomic))
             .field("keyvalue_eventual", &format_opt(&self.keyvalue_eventual))
-            .field("logging", &format_opt(&self.logging))
             .field("messaging", &format_opt(&self.messaging))
             .field("outgoing_http", &format_opt(&self.outgoing_http))
             .finish()
@@ -952,22 +691,18 @@ impl From<Handler> for HandlerBuilder {
     fn from(
         Handler {
             blobstore,
-            bus,
             incoming_http,
             keyvalue_atomic,
             keyvalue_eventual,
-            logging,
             messaging,
             outgoing_http,
         }: Handler,
     ) -> Self {
         Self {
             blobstore,
-            bus,
             incoming_http,
             keyvalue_atomic,
             keyvalue_eventual,
-            logging,
             messaging,
             outgoing_http,
         }
@@ -978,23 +713,19 @@ impl From<HandlerBuilder> for Handler {
     fn from(
         HandlerBuilder {
             blobstore,
-            bus,
             incoming_http,
             keyvalue_atomic,
             keyvalue_eventual,
-            logging,
             messaging,
             outgoing_http,
         }: HandlerBuilder,
     ) -> Self {
         Self {
             blobstore,
-            bus,
             incoming_http,
             outgoing_http,
             keyvalue_atomic,
             keyvalue_eventual,
-            logging,
             messaging,
         }
     }

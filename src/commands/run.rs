@@ -102,7 +102,7 @@ pub struct RunCommand {
 enum CliLinker {
     Core(wasmtime::Linker<Host>),
     #[cfg(feature = "component-model")]
-    Component(wasmtime::component::Linker<Host>),
+    Component(wasmtime::component::Linker<wasmtime_wasi_cloud_core::component::Ctx>),
 }
 
 impl RunCommand {
@@ -745,7 +745,8 @@ impl RunCommand {
                         bail!("Cannot enable wasi-cloud-core for core wasm modules");
                     }
                     CliLinker::Component(linker) => {
-                        wasmtime_wasi_cloud_core::Interfaces::add_to_linker(linker)?;
+                        wasmtime_wasi_cloud_core::capability::Interfaces::add_to_linker(linker, |ctx| ctx)
+                            .context("failed to link `wasmcloud:host/interfaces` interface")?;
                     }
                 }
             }

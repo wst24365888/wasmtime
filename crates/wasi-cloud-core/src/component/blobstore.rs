@@ -1,4 +1,4 @@
-use super::{Ctx, Instance};
+use super::Ctx;
 
 use crate::capability::blobstore::blobstore::ContainerName;
 use crate::capability::blobstore::container::{Container, StreamObjectNames};
@@ -21,14 +21,6 @@ use wasmtime_wasi::pipe::{AsyncReadStream, AsyncWriteStream};
 use wasmtime_wasi::{HostOutputStream, InputStream};
 
 type Result<T, E = Error> = core::result::Result<T, E>;
-
-impl Instance {
-    /// Set [`Blobstore`] handler for this [Instance].
-    pub fn blobstore(&mut self, blobstore: Arc<dyn Blobstore + Send + Sync>) -> &mut Self {
-        self.handler_mut().replace_blobstore(blobstore);
-        self
-    }
-}
 
 #[async_trait]
 impl container::HostContainer for Ctx {
