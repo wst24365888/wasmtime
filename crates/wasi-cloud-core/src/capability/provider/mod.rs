@@ -6,3 +6,7 @@ pub use mem::{
     BlobstoreObject as MemoryBlobstoreObject, KeyValue as MemoryKeyValue,
     KeyValueEntry as MemoryKeyValueEntry,
 };
+
+pub mod aws;
+
+pub use aws::S3Blobstore;

@@ -41,3 +41,5 @@ wasmtime-wasi-nn = { workspace = true }
 wasmtime-wasi-threads = { workspace = true }
 wasmtime-wasi-http = { workspace = true }
 wit-component = { workspace = true }
+aws-sdk-s3 = "1.19.1"
+aws-config = "1.1.8"

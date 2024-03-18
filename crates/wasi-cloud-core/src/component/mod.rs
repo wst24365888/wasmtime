@@ -1,8 +1,10 @@
-use crate::capability::builtin;
+use crate::capability::builtin::{self, Handler};
+use crate::capability::provider::{MemoryBlobstore, MemoryKeyValue, MemoryKeyValueEntry, S3Blobstore};
 
 use core::fmt::{self, Debug};
 use core::ops::{Deref, DerefMut};
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -202,8 +204,18 @@ impl Host {
     }
 
     pub fn default() -> Self {
+        let blobstore: Arc<S3Blobstore> = Arc::new(S3Blobstore::new().expect("Failed to create S3Blobstore"));
+        let keyvalue = Arc::new(MemoryKeyValue::from(HashMap::from([(
+            "".into(),
+            HashMap::from([("foo".into(), MemoryKeyValueEntry::Blob(b"bar".to_vec()))]),
+        )])));
+    
+        let bulider = builtin::HandlerBuilder::default()
+            .blobstore(blobstore)
+            .keyvalue_eventual(keyvalue);
+
         Self {
-            handler: builtin::Handler::default(),
+            handler: Handler::from(bulider),
             stdin: StdioStream::default(),
             stdout: StdioStream::default(),
             stderr: StdioStream::default(),
