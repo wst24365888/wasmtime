@@ -320,6 +320,10 @@ pub struct CommonOptions {
     #[arg(short = 'S', long = "wasi", value_name = "KEY[=VAL[,..]]")]
     wasi_raw: Vec<opt::CommaSeparated<Wasi>>,
 
+    // Bool for disabling caching, for read-only filesystems.
+    #[arg(long = "cache")]
+    pub disable_cache: Option<bool>,
+
     // These fields are filled in by the `configure` method below via the
     // options parsed from the CLI above. This is what the CLI should use.
     #[arg(skip)]
@@ -621,6 +625,7 @@ impl PartialEq for CommonOptions {
             wasm_raw: _,
             wasi_raw: _,
             configured: _,
+            disable_cache: _,
 
             opts,
             codegen,

@@ -114,6 +114,12 @@ impl RunCommand {
         self.run.common.init_logging()?;
 
         let mut config = self.run.common.config(None)?;
+        
+        if let Some(disable_cache) = self.run.common.disable_cache {
+            if disable_cache {
+                config.disable_cache();
+            }
+        }
 
         if self.run.common.wasm.timeout.is_some() {
             config.epoch_interruption(true);
