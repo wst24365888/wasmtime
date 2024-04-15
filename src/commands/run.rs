@@ -115,10 +115,9 @@ impl RunCommand {
 
         let mut config = self.run.common.config(None)?;
         
-        if let Some(disable_cache) = self.run.common.disable_cache {
-            if disable_cache {
-                config.disable_cache();
-            }
+        println!("Disabling cache: {}", disable_cache);
+        if self.run.common.disable_cache {
+            config.disable_cache();
         }
 
         if self.run.common.wasm.timeout.is_some() {

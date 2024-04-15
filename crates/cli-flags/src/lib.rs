@@ -321,8 +321,8 @@ pub struct CommonOptions {
     wasi_raw: Vec<opt::CommaSeparated<Wasi>>,
 
     // Bool for disabling caching, for read-only filesystems.
-    #[arg(long = "cache")]
-    pub disable_cache: Option<bool>,
+    #[arg(long)]
+    pub disable_cache: bool,
 
     // These fields are filled in by the `configure` method below via the
     // options parsed from the CLI above. This is what the CLI should use.
