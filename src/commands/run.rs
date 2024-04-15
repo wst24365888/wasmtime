@@ -115,7 +115,7 @@ impl RunCommand {
 
         let mut config = self.run.common.config(None)?;
         
-        println!("Disabling cache: {}", disable_cache);
+        println!("Disabling cache: {}", self.run.common.disable_cache);
         if self.run.common.disable_cache {
             config.disable_cache();
         }
