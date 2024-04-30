@@ -203,8 +203,8 @@ impl Host {
         (table, handler)
     }
 
-    pub fn default() -> Self {
-        let blobstore: Arc<S3Blobstore> = Arc::new(S3Blobstore::new().expect("Failed to create S3Blobstore"));
+    pub async fn default() -> Self {
+        let blobstore: Arc<S3Blobstore> = Arc::new(S3Blobstore::new().await.expect("Failed to create S3Blobstore"));
         let keyvalue = Arc::new(MemoryKeyValue::from(HashMap::from([(
             "".into(),
             HashMap::from([("foo".into(), MemoryKeyValueEntry::Blob(b"bar".to_vec()))]),
