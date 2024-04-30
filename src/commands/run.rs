@@ -110,10 +110,11 @@ enum CliLinker {
 
 impl RunCommand {
     /// Executes the command.
-    pub fn execute(mut self) -> Result<()> {
+    pub async fn execute(mut self) -> Result<()> {
         self.run.common.init_logging()?;
 
         let mut config = self.run.common.config(None)?;
+        config.async_support(true);
 
         if self.run.common.wasm.timeout.is_some() {
             config.epoch_interruption(true);
