@@ -213,7 +213,7 @@ impl RunCommand {
 
         // Load the main wasm module.
         match self
-            .load_main_module(&mut store, &mut linker, &main, modules)
+            .load_main_module(&mut store, &mut linker, &main, modules).await
             .with_context(|| {
                 format!(
                     "failed to run main module `{}`",
@@ -400,7 +400,7 @@ impl RunCommand {
         });
     }
 
-    fn load_main_module(
+    async fn load_main_module(
         &self,
         store: &mut Store<Host>,
         linker: &mut CliLinker,
@@ -439,7 +439,7 @@ impl RunCommand {
         let result = match linker {
             CliLinker::Core(linker) => {
                 let module = module.unwrap_core();
-                let instance = linker.instantiate(&mut *store, &module).context(format!(
+                let instance = linker.instantiate_async(&mut *store, &module).await.context(format!(
                     "failed to instantiate {:?}",
                     self.module_and_args[0]
                 ))?;
@@ -477,14 +477,14 @@ impl RunCommand {
 
                 let component = module.unwrap_component();
 
-                let (command, _instance) = wasmtime_wasi::command::sync::Command::instantiate(
+                let (command, _instance) = wasmtime_wasi::command::Command::instantiate_async(
                     &mut *store,
                     component,
                     linker,
-                )?;
+                ).await?;
                 let result = command
                     .wasi_cli_run()
-                    .call_run(&mut *store)
+                    .call_run(&mut *store).await
                     .context("failed to invoke `run` function")
                     .map_err(|e| self.handle_core_dump(&mut *store, e));
 
