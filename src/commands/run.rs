@@ -163,7 +163,7 @@ impl RunCommand {
             }
         }
 
-        let host = Host::default();
+        let host = Host::default().await;
         let mut store = Store::new(&engine, host);
         self.populate_with_wasi(&mut linker, &mut store, &main)?;
 

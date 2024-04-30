@@ -19,15 +19,8 @@ pub struct S3Blobstore {
 }
 
 impl S3Blobstore {
-    pub fn new() -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_time()
-            .enable_io()
-            .build()?;
-
-        let config = runtime.block_on(async {
-            aws_config::defaults(BehaviorVersion::v2023_11_09()).load().await
-        });
+    pub async fn new() -> Result<Self> {
+        let config = aws_config::defaults(BehaviorVersion::v2023_11_09()).load().await;
         let client = Arc::new(Client::new(&config));
         Ok(Self { client })
     }
