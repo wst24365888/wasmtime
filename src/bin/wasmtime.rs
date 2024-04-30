@@ -84,7 +84,7 @@ enum Subcommand {
 
 impl Wasmtime {
     /// Executes the command.
-    pub fn execute(self) -> Result<()> {
+    pub async fn execute(self) -> Result<()> {
         #[cfg(feature = "run")]
         let subcommand = self.subcommand.unwrap_or(Subcommand::Run(self.run));
         #[cfg(not(feature = "run"))]
@@ -92,7 +92,7 @@ impl Wasmtime {
 
         match subcommand {
             #[cfg(feature = "run")]
-            Subcommand::Run(c) => c.execute(),
+            Subcommand::Run(c) => c.execute().await,
 
             #[cfg(feature = "cache")]
             Subcommand::Config(c) => c.execute(),
@@ -115,9 +115,10 @@ impl Wasmtime {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     #[cfg(feature = "old-cli")]
-    return old_cli::main();
+    return old_cli::main().await;
 
     #[cfg(not(feature = "old-cli"))]
     return Wasmtime::parse().execute();
@@ -154,12 +155,12 @@ mod old_cli {
         })
     }
 
-    pub fn main() -> Result<()> {
+    pub async fn main() -> Result<()> {
         match which_cli()? {
             // If the old or the new CLI is explicitly selected, then run that
             // variant no questions asked.
-            WhichCli::New => return Wasmtime::parse().execute(),
-            WhichCli::Old => return try_parse_old().unwrap_or_else(|e| e.exit()).execute(),
+            WhichCli::New => return Wasmtime::parse().execute().await,
+            WhichCli::Old => return try_parse_old().unwrap_or_else(|e| e.exit()).execute().await,
 
             // fall through below to run an unspecified version of the CLI
             WhichCli::Unspecified => {}
@@ -187,7 +188,7 @@ mod old_cli {
             // dictate which wins and additionally print a warning message.
             (Ok(new), Ok(old)) => {
                 if new == old {
-                    return new.execute();
+                    return new.execute().await;
                 }
                 if DEFAULT_OLD_BEHAVIOR {
                     eprintln!(
@@ -204,7 +205,7 @@ warning: this CLI invocation of Wasmtime will be parsed differently in future
          - WASMTIME_NEW_CLI=1 to indicate new semantics are desired and use the latest behavior\
 "
                     );
-                    old.execute()
+                    old.execute().await
                 } else {
                     // this error message is not statically reachable due to
                     // `DEFAULT_OLD_BEHAVIOR=true` at this time, but when that
@@ -225,7 +226,7 @@ warning: this CLI invocation of Wasmtime is parsed differently than it was
          - WASMTIME_NEW_CLI=1 to indicate new semantics are desired and silences this warning\
 "
                     );
-                    new.execute()
+                    new.execute().await
                 }
             }
 
@@ -235,7 +236,7 @@ warning: this CLI invocation of Wasmtime is parsed differently than it was
             //
             // In this situation assume that the new parser is what's intended
             // so execute those semantics.
-            (Ok(new), Err(_old)) => new.execute(),
+            (Ok(new), Err(_old)) => new.execute().await,
 
             // Here the new parser failed and the old parser succeeded. This
             // could indicate for example passing old CLI flags.
@@ -257,7 +258,7 @@ warning: this CLI invocation of Wasmtime is going to break in the future -- for
          - WASMTIME_NEW_CLI=1 to indicate new semantics are desired and see the error\
 "
                 );
-                old.execute()
+                old.execute().await
             }
 
             // Both parsers failed to parse the CLI invocation.

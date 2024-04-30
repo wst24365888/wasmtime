@@ -30,7 +30,7 @@ mod bindgen {
 
     wasmtime::component::bindgen!({
         world: "interfaces",
-        async: false,
+        async: true,
         with: {
            "wasi:blobstore/container/container": blobstore::Container,
            "wasi:blobstore/container/stream-object-names": blobstore::StreamObjectNames,
