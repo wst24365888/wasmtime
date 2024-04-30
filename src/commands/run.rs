@@ -641,7 +641,7 @@ impl RunCommand {
                 }
                 #[cfg(feature = "component-model")]
                 CliLinker::Component(linker) => {
-                    wasmtime_wasi::command::sync::add_to_linker(linker)?;
+                    wasmtime_wasi::command::add_to_linker(linker)?;
                     self.set_preview2_ctx(store)?;
                 }
             }
