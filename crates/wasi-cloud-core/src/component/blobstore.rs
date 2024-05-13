@@ -300,9 +300,9 @@ impl types::HostIncomingValue for Host {
         &mut self,
         incoming_value: Resource<types::IncomingValue>,
     ) -> anyhow::Result<Result<types::IncomingValueSyncBody>> {
-        let (stream, size) = self
+        let (stream, size): (Box<dyn AsyncRead + Sync + Send + Unpin>, u64) = self
             .table()
-            .delete(incoming_value)
+            .delete(Resource::new_own(incoming_value.rep()))
             .context("failed to delete incoming value")?;
         let mut stream = stream.take(size);
         let size = size.try_into().context("size does not fit in `usize`")?;
@@ -321,9 +321,9 @@ impl types::HostIncomingValue for Host {
         &mut self,
         incoming_value: Resource<types::IncomingValue>,
     ) -> anyhow::Result<Result<Resource<InputStream>>> {
-        let (stream, _) = self
+        let (stream, _): (Box<dyn AsyncRead + Sync + Send + Unpin>, u64) = self
             .table()
-            .delete(incoming_value)
+            .delete(Resource::new_own(incoming_value.rep()))
             .context("failed to delete incoming value")?;
         let stream = self
             .table()
