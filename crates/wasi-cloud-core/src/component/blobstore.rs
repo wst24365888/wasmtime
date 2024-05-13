@@ -74,6 +74,7 @@ impl container::HostContainer for Host {
                     .table()
                     .push((stream, size))
                     .context("failed to push stream and size")?;
+                println!("incoming_value push rep: {:?}", value.rep());
                 Ok(Ok(value))
             }
             Err(err) => Ok(Err(format!("{err:#}"))),
@@ -289,9 +290,10 @@ impl types::HostOutgoingValue for Host {
 impl types::HostIncomingValue for Host {
     #[instrument]
     fn drop(&mut self, incoming_value: Resource<types::IncomingValue>) -> anyhow::Result<()> {
-        self.table()
-            .delete(incoming_value)
-            .context("failed to delete incoming value")?;
+        println!("incoming_value (drop) delete rep: {:?}", incoming_value.rep());
+        // self.table()
+        //     .delete(incoming_value)
+        //     .context("failed to delete incoming value")?;
         Ok(())
     }
 
@@ -300,7 +302,8 @@ impl types::HostIncomingValue for Host {
         &mut self,
         incoming_value: Resource<types::IncomingValue>,
     ) -> anyhow::Result<Result<types::IncomingValueSyncBody>> {
-        let (stream, size) = self
+        println!("incoming_value (sync) delete rep: {:?}", incoming_value.rep());
+        let (stream, size): types::IncomingValue = self
             .table()
             .delete(incoming_value)
             .context("failed to delete incoming value")?;
@@ -321,6 +324,7 @@ impl types::HostIncomingValue for Host {
         &mut self,
         incoming_value: Resource<types::IncomingValue>,
     ) -> anyhow::Result<Result<Resource<InputStream>>> {
+        println!("incoming_value (async) delete rep: {:?}", incoming_value.rep());
         let (stream, _) = self
             .table()
             .delete(incoming_value)
