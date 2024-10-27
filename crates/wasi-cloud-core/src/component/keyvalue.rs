@@ -1,0 +1,317 @@
+use super::Host;
+
+use crate::capability::keyvalue::{atomic, eventual, types, wasi_keyvalue_error};
+use crate::capability::{KeyValueAtomic, KeyValueEventual};
+use crate::io::AsyncVec;
+
+use std::sync::Arc;
+
+use anyhow::{anyhow, ensure, Context};
+use async_trait::async_trait;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tracing::instrument;
+use wasmtime::component::Resource;
+use wasmtime_wasi::pipe::{AsyncReadStream, AsyncWriteStream};
+use wasmtime_wasi::{HostOutputStream, InputStream, WasiView};
+
+type Result<T, E = Resource<wasi_keyvalue_error::Error>> = core::result::Result<T, E>;
+
+#[async_trait]
+impl atomic::Host for Host {
+    #[instrument]
+    async fn increment(
+        &mut self,
+        bucket: Resource<types::Bucket>,
+        key: types::Key,
+        delta: u64,
+    ) -> anyhow::Result<Result<u64>> {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.increment(bucket, key, delta).await {
+            Ok(new) => Ok(Ok(new)),
+            Err(err) => {
+                let err = self.table().push(err).context("failed to push error")?;
+                Ok(Err(err))
+            }
+        }
+    }
+
+    #[instrument]
+    async fn compare_and_swap(
+        &mut self,
+        bucket: Resource<types::Bucket>,
+        key: types::Key,
+        old: u64,
+        new: u64,
+    ) -> anyhow::Result<Result<bool>> {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.compare_and_swap(bucket, key, old, new).await {
+            Ok(changed) => Ok(Ok(changed)),
+            Err(err) => {
+                let err = self.table().push(err).context("failed to push error")?;
+                Ok(Err(err))
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl eventual::Host for Host {
+    #[instrument]
+    async fn get(
+        &mut self,
+        bucket: Resource<types::Bucket>,
+        key: types::Key,
+    ) -> anyhow::Result<Result<Option<Resource<types::IncomingValue>>>> {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.get(bucket, key).await {
+            Ok(Some((stream, size))) => {
+                let value = self
+                    .table()
+                    .push((stream, size))
+                    .context("failed to push stream and size")?;
+                Ok(Ok(Some(value)))
+            }
+            Ok(None) => Ok(Ok(None)),
+            Err(err) => {
+                let err = self.table().push(err).context("failed to push error")?;
+                Ok(Err(err))
+            }
+        }
+    }
+
+    #[instrument]
+    async fn set(
+        &mut self,
+        bucket: Resource<types::Bucket>,
+        key: types::Key,
+        outgoing_value: Resource<types::OutgoingValue>,
+    ) -> anyhow::Result<Result<()>> {
+        let (table, handler) = self.table_and_handler();
+        let mut stream = table
+            .get::<AsyncVec>(&outgoing_value)
+            .context("failed to get outgoing value")?
+            .clone();
+        stream.rewind().await.context("failed to rewind stream")?;
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.set(bucket, key, Box::new(stream)).await {
+            Ok(()) => Ok(Ok(())),
+            Err(err) => {
+                let err = self.table().push(err).context("failed to push error")?;
+                Ok(Err(err))
+            }
+        }
+    }
+
+    #[instrument]
+    async fn delete(
+        &mut self,
+        bucket: Resource<types::Bucket>,
+        key: types::Key,
+    ) -> anyhow::Result<Result<()>> {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.delete(bucket, key).await {
+            Ok(()) => Ok(Ok(())),
+            Err(err) => {
+                let err = self.table().push(err).context("failed to push error")?;
+                Ok(Err(err))
+            }
+        }
+    }
+
+    #[instrument]
+    async fn exists(
+        &mut self,
+        bucket: Resource<types::Bucket>,
+        key: types::Key,
+    ) -> anyhow::Result<Result<bool>> {
+        let (table, handler) = self.table_and_handler();
+        let bucket = table.get(&bucket).context("failed to get bucket")?;
+        match handler.exists(bucket, key).await {
+            Ok(true) => Ok(Ok(true)),
+            Ok(false) => {
+                // NOTE: This is required until
+                // https://github.com/WebAssembly/wasi-keyvalue/pull/18 is merged
+                let err = self
+                    .table()
+                    .push(anyhow!("key does not exist"))
+                    .context("failed to push error")?;
+                Ok(Err(err))
+            }
+            Err(err) => {
+                let err = self.table().push(err).context("failed to push error")?;
+                Ok(Err(err))
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl types::HostBucket for Host {
+    #[instrument]
+    fn drop(&mut self, bucket: Resource<types::Bucket>) -> anyhow::Result<()> {
+        self.table()
+            .delete(bucket)
+            .context("failed to delete bucket")?;
+        Ok(())
+    }
+
+    #[instrument]
+    async fn open_bucket(
+        &mut self,
+        name: String,
+    ) -> anyhow::Result<Result<Resource<types::Bucket>>> {
+        let bucket = self
+            .table()
+            .push(Arc::new(name))
+            .context("failed to open bucket")?;
+        Ok(Ok(bucket))
+    }
+}
+
+#[async_trait]
+impl types::HostOutgoingValue for Host {
+    #[instrument]
+    fn drop(&mut self, outgoing_value: Resource<types::OutgoingValue>) -> anyhow::Result<()> {
+        self.table()
+            .delete(outgoing_value)
+            .context("failed to delete outgoing value")?;
+        Ok(())
+    }
+
+    #[instrument]
+    async fn new_outgoing_value(&mut self) -> anyhow::Result<Resource<types::OutgoingValue>> {
+        self.table()
+            .push(AsyncVec::default())
+            .context("failed to push outgoing value")
+    }
+
+    #[instrument]
+    async fn outgoing_value_write_body_sync(
+        &mut self,
+        outgoing_value: Resource<types::OutgoingValue>,
+        body: Vec<u8>,
+    ) -> anyhow::Result<Result<()>> {
+        let mut stream = self
+            .table()
+            .get::<AsyncVec>(&outgoing_value)
+            .context("failed to get outgoing value")?
+            .clone();
+        stream
+            .write_all(&body)
+            .await
+            .context("failed to write body")?;
+        Ok(Ok(()))
+    }
+
+    #[instrument]
+    async fn outgoing_value_write_body_async(
+        &mut self,
+        outgoing_value: Resource<types::OutgoingValue>,
+    ) -> anyhow::Result<Result<Resource<types::OutputStream>>> {
+        let stream = self
+            .table()
+            .get::<AsyncVec>(&outgoing_value)
+            .context("failed to get outgoing value")?
+            .clone();
+        let stream: Box<dyn HostOutputStream> = Box::new(AsyncWriteStream::new(1 << 16, stream));
+        let stream = self
+            .table()
+            .push(stream)
+            .context("failed to push output stream")?;
+        Ok(Ok(stream))
+    }
+}
+
+#[async_trait]
+impl types::HostIncomingValue for Host {
+    #[instrument]
+    fn drop(&mut self, incoming_value: Resource<types::IncomingValue>) -> anyhow::Result<()> {
+        self.table()
+            .delete(incoming_value)
+            .context("failed to delete incoming value")?;
+        Ok(())
+    }
+
+    #[instrument]
+    async fn incoming_value_consume_sync(
+        &mut self,
+        incoming_value: Resource<types::IncomingValue>,
+    ) -> anyhow::Result<Result<types::IncomingValueSyncBody>> {
+        let (stream, size) = self
+            .table()
+            .delete(incoming_value)
+            .context("failed to delete incoming value")?;
+        let mut stream = stream.take(size);
+        let size = size.try_into().context("size does not fit in `usize`")?;
+        let mut buf = Vec::with_capacity(size);
+        match stream.read_to_end(&mut buf).await {
+            Ok(n) => {
+                ensure!(n == size);
+                Ok(Ok(buf))
+            }
+            Err(err) => {
+                let err = self
+                    .table()
+                    .push(anyhow!(err).context("failed to read stream"))
+                    .context("failed to push error")?;
+                Ok(Err(err))
+            }
+        }
+    }
+
+    #[instrument]
+    async fn incoming_value_consume_async(
+        &mut self,
+        incoming_value: Resource<types::IncomingValue>,
+    ) -> anyhow::Result<Result<Resource<InputStream>>> {
+        let (stream, _) = self
+            .table()
+            .delete(incoming_value)
+            .context("failed to delete incoming value")?;
+        let stream = self
+            .table()
+            .push(InputStream::Host(Box::new(AsyncReadStream::new(stream))))
+            .context("failed to push input stream")?;
+        Ok(Ok(stream))
+    }
+
+    #[instrument]
+    async fn incoming_value_size(
+        &mut self,
+        incoming_value: Resource<types::IncomingValue>,
+    ) -> anyhow::Result<Result<u64>> {
+        let (_, size): &(Box<dyn AsyncRead + Sync + Send + Unpin>, _) = self
+            .table()
+            .get(&incoming_value)
+            .context("failed to get incoming value")?;
+        Ok(Ok(*size))
+    }
+}
+
+impl types::Host for Host {}
+
+#[async_trait]
+impl wasi_keyvalue_error::HostError for Host {
+    #[instrument]
+    fn drop(&mut self, error: Resource<wasi_keyvalue_error::Error>) -> anyhow::Result<()> {
+        let _: anyhow::Error = self.table().delete(error).context("failed to delete error")?;
+        Ok(())
+    }
+
+    #[instrument]
+    async fn trace(
+        &mut self,
+        error: Resource<wasi_keyvalue_error::Error>,
+    ) -> anyhow::Result<String> {
+        self.table()
+            .get(&error)
+            .context("failed to get error")
+            .map(|err: &anyhow::Error| format!("{err:#}"))
+    }
+}
+
+impl wasi_keyvalue_error::Host for Host {}

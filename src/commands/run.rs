@@ -25,6 +25,9 @@ use wasmtime_wasi_threads::WasiThreadsCtx;
 #[cfg(feature = "wasi-http")]
 use wasmtime_wasi_http::WasiHttpCtx;
 
+#[cfg(feature = "wasi-cloud-core")]
+use wasmtime_wasi_cloud_core::component::Host;
+
 fn parse_env_var(s: &str) -> Result<(String, Option<String>)> {
     let mut parts = s.splitn(2, '=');
     Ok((
@@ -107,10 +110,11 @@ enum CliLinker {
 
 impl RunCommand {
     /// Executes the command.
-    pub fn execute(mut self) -> Result<()> {
+    pub async fn execute(mut self) -> Result<()> {
         self.run.common.init_logging()?;
 
         let mut config = self.run.common.config(None)?;
+        config.async_support(true);
 
         if self.run.common.wasm.timeout.is_some() {
             config.epoch_interruption(true);
@@ -159,7 +163,7 @@ impl RunCommand {
             }
         }
 
-        let host = Host::default();
+        let host = Host::default().await;
         let mut store = Store::new(&engine, host);
         self.populate_with_wasi(&mut linker, &mut store, &main)?;
 
@@ -209,7 +213,7 @@ impl RunCommand {
 
         // Load the main wasm module.
         match self
-            .load_main_module(&mut store, &mut linker, &main, modules)
+            .load_main_module(&mut store, &mut linker, &main, modules).await
             .with_context(|| {
                 format!(
                     "failed to run main module `{}`",
@@ -396,7 +400,7 @@ impl RunCommand {
         });
     }
 
-    fn load_main_module(
+    async fn load_main_module(
         &self,
         store: &mut Store<Host>,
         linker: &mut CliLinker,
@@ -435,7 +439,7 @@ impl RunCommand {
         let result = match linker {
             CliLinker::Core(linker) => {
                 let module = module.unwrap_core();
-                let instance = linker.instantiate(&mut *store, &module).context(format!(
+                let instance = linker.instantiate_async(&mut *store, &module).await.context(format!(
                     "failed to instantiate {:?}",
                     self.module_and_args[0]
                 ))?;
@@ -473,14 +477,14 @@ impl RunCommand {
 
                 let component = module.unwrap_component();
 
-                let (command, _instance) = wasmtime_wasi::command::sync::Command::instantiate(
+                let (command, _instance) = wasmtime_wasi::command::Command::instantiate_async(
                     &mut *store,
                     component,
                     linker,
-                )?;
+                ).await?;
                 let result = command
                     .wasi_cli_run()
-                    .call_run(&mut *store)
+                    .call_run(&mut *store).await
                     .context("failed to invoke `run` function")
                     .map_err(|e| self.handle_core_dump(&mut *store, e));
 
@@ -637,7 +641,7 @@ impl RunCommand {
                 }
                 #[cfg(feature = "component-model")]
                 CliLinker::Component(linker) => {
-                    wasmtime_wasi::command::sync::add_to_linker(linker)?;
+                    wasmtime_wasi::command::add_to_linker(linker)?;
                     self.set_preview2_ctx(store)?;
                 }
             }
@@ -733,6 +737,25 @@ impl RunCommand {
             }
         }
 
+        if self.run.common.wasi.cloud_core == Some(true) {
+            #[cfg(not(all(feature = "wasi-cloud-core", feature = "component-model")))]
+            {
+                bail!("Cannot enable wasi-cloud-core when the binary is not compiled with this feature.");
+            }
+            #[cfg(all(feature = "wasi-cloud-core", feature = "component-model"))]
+            {
+                match linker {
+                    CliLinker::Core(_) => {
+                        bail!("Cannot enable wasi-cloud-core for core wasm modules");
+                    }
+                    CliLinker::Component(linker) => {
+                        wasmtime_wasi_cloud_core::capability::Interfaces::add_to_linker(linker, |ctx| ctx)
+                            .context("failed to link `wasmcloud:host/interfaces` interface")?;
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -816,6 +839,7 @@ impl RunCommand {
     }
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 #[derive(Default, Clone)]
 struct Host {
     preview1_ctx: Option<wasi_common::WasiCtx>,
@@ -845,6 +869,7 @@ struct Host {
     guest_profiler: Option<Arc<wasmtime::GuestProfiler>>,
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 impl wasmtime_wasi::WasiView for Host {
     fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
         Arc::get_mut(&mut self.preview2_table)
@@ -862,6 +887,7 @@ impl wasmtime_wasi::WasiView for Host {
     }
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 impl wasmtime_wasi::preview1::WasiPreview1View for Host {
     fn adapter(&self) -> &wasmtime_wasi::preview1::WasiPreview1Adapter {
         &self.preview2_adapter
@@ -873,6 +899,7 @@ impl wasmtime_wasi::preview1::WasiPreview1View for Host {
     }
 }
 
+#[cfg(not(feature = "wasi-cloud-core"))]
 #[cfg(feature = "wasi-http")]
 impl wasmtime_wasi_http::types::WasiHttpView for Host {
     fn ctx(&mut self) -> &mut WasiHttpCtx {
